@@ -3,3 +3,5 @@ SHELL: /bin/bash
 
 dev:
 	@echo -------- $@ $$(date) --------
+	uv run main.py
+
