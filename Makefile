@@ -1,7 +1,7 @@
 SHELL: /bin/bash
 .ONESHELL:
 
-dev:
+run-main:
 	@echo -------- $@ $$(date) --------
 	uv run main.py
 
