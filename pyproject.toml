@@ -9,4 +9,7 @@ dependencies = [
     "loguru>=0.7.3",
     "torch>=2.9.1",
     "torchvision>=0.24.1",
+    "matplotlib>=3.8.0",
+    "streamlit>=1.28.0",
+    "streamlit-drawable-canvas>=0.9.3",
 ]
