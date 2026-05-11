@@ -1,5 +1,7 @@
 from loguru import logger
 logger.info("Importing libraries")
+import os
+import sys
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -8,44 +10,23 @@ from torchvision.transforms import ToTensor
 import matplotlib.pyplot as plt
 plt.switch_backend('Agg')
 
-# Trainingsdaten runterladen
-logger.info("Loading datasets")    
-training_data = datasets.MNIST(
-    root="data",
-    train=True,
-    download=True,
-    transform=ToTensor(),
-)
+STREAMLIT_AVAILABLE = False
+try:
+    import streamlit as st
+    from streamlit_drawable_canvas import st_canvas
+    STREAMLIT_AVAILABLE = True
+except ImportError:
+    print("Bitte installiere streamlit und streamlit-drawable-canvas:")
+    print("uv run python -m pip install streamlit streamlit-drawable-canvas")
+    sys.exit(1)
 
-# Testdaten runterladen
-test_data = datasets.MNIST(
-    root="data",
-    train=False,
-    download=True,
-    transform=ToTensor(),
-)
-logger.info("done")
+from PIL import Image
+import numpy as np
 
+classes = [str(i) for i in range(10)]
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# DataLoader erstellen
-batch_size = 64
-train_dataloader = DataLoader(training_data, batch_size=batch_size)
-test_dataloader = DataLoader(test_data, batch_size=batch_size)
-
-for X, y in test_dataloader:
-    print(f"Shape of X [N, C, H, W]: {X.shape}")
-    print(f"Shape of y: {y.shape} {y.dtype}")
-    break
-
-
-
-
-
-device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
-print(f"Using {device} device")
-
-# Erstelle verschiedene neurale Netze
 class OneLayerMLP(nn.Module):
     def __init__(self):
         super().__init__()
@@ -101,158 +82,290 @@ class SimpleCNN(nn.Module):
         x = self.flatten(x)
         return self.classifier(x)
 
-# Modelle definieren
-models = {
-    'OneLayerMLP': OneLayerMLP().to(device),
-    'DeepMLP': DeepMLP().to(device),
-    'SimpleCNN': SimpleCNN().to(device)
+model_classes = {
+    'OneLayerMLP': OneLayerMLP,
+    'DeepMLP': DeepMLP,
+    'SimpleCNN': SimpleCNN,
 }
 
-for name, model in models.items():
-    print(f"\n{name} Model:")
-    print(model)
+@st.cache_data
+def load_datasets():
+    training_data = datasets.MNIST(
+        root='data', train=True, download=True, transform=ToTensor()
+    )
+    test_data = datasets.MNIST(
+        root='data', train=False, download=True, transform=ToTensor()
+    )
+    return training_data, test_data
 
-loss_fn = nn.CrossEntropyLoss()
+@st.cache_resource
+def create_model(name):
+    model = model_classes[name]().to(device)
+    return model
 
-def train(dataloader, model, loss_fn, optimizer):
+def model_path(name: str) -> str:
+    return f"model_{name.lower()}.pth"
+
+def weights_available() -> bool:
+    return all(os.path.exists(model_path(name)) for name in model_classes)
+
+@st.cache_resource
+def load_models():
+    models = {}
+    for name in model_classes:
+        model = create_model(name)
+        model.load_state_dict(torch.load(model_path(name), map_location=device))
+        model.eval()
+        models[name] = model
+    return models
+
+
+def train(dataloader, model, loss_fn, optimizer, progress_callback=None):
     size = len(dataloader.dataset)
     model.train()
-    total_loss = 0
+    total_loss = 0.0
     for batch, (X, y) in enumerate(dataloader):
         X, y = X.to(device), y.to(device)
-
-        # Berechne Vorhersage und Verlust
+        optimizer.zero_grad()
         pred = model(X)
         loss = loss_fn(pred, y)
-
-        # Backpropagation
         loss.backward()
         optimizer.step()
-        optimizer.zero_grad()
-
         total_loss += loss.item()
-        if batch % 100 == 0:
-            loss, current = loss.item(), (batch + 1) * len(X)
-            print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
-    
+        if progress_callback is not None:
+            progress_callback((batch + 1) / len(dataloader))
     return total_loss / len(dataloader)
 
 
-def test(dataloader, model, loss_fn):
-    size = len(dataloader.dataset)
-    num_batches = len(dataloader)
+def evaluate(dataloader, model, loss_fn):
     model.eval()
-    test_loss, correct = 0, 0
+    total_loss = 0.0
+    correct = 0
     with torch.no_grad():
         for X, y in dataloader:
             X, y = X.to(device), y.to(device)
             pred = model(X)
-            test_loss += loss_fn(pred, y).item()
+            total_loss += loss_fn(pred, y).item()
             correct += (pred.argmax(1) == y).type(torch.float).sum().item()
-    test_loss /= num_batches
-    correct /= size
-    print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
-    return test_loss, correct
+    total_loss /= len(dataloader)
+    accuracy = correct / len(dataloader.dataset)
+    return total_loss, accuracy * 100
 
-# Trainiere alle Modelle
-epochs = 5
-results = {}
 
-for model_name, model in models.items():
-    print(f"\n{'='*50}")
-    print(f"Trainiere {model_name} Model")
-    print(f"{'='*50}\n")
-    
-    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
-    train_losses = []
-    test_losses = []
-    test_accuracies = []
-    
-    for t in range(epochs):
-        print(f"Epoch {t+1}\n-------------------------------")
-        train_loss = train(train_dataloader, model, loss_fn, optimizer)
-        test_loss, accuracy = test(test_dataloader, model, loss_fn)
-        
-        train_losses.append(train_loss)
-        test_losses.append(test_loss)
-        test_accuracies.append(accuracy * 100)
-    
-    results[model_name] = {
-        'train_losses': train_losses,
-        'test_losses': test_losses,
-        'test_accuracies': test_accuracies
-    }
-    
-    # Speichere das Modell
-    torch.save(model.state_dict(), f"model_{model_name.lower()}.pth")
-    print(f"Modell gespeichert als 'model_{model_name.lower()}.pth'")
+def train_all_models(epochs: int):
+    training_data, test_data = load_datasets()
+    train_dataloader = DataLoader(training_data, batch_size=64)
+    test_dataloader = DataLoader(test_data, batch_size=64)
+    results = {}
+    trained_models = {}
+    loss_fn = nn.CrossEntropyLoss()
 
-print("Done!")
-logger.info("Training complete")
+    for name in model_classes:
+        model = model_classes[name]().to(device)
+        optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+        train_losses = []
+        test_losses = []
+        test_accuracies = []
+        progress_bar = st.progress(0.0, text=f"Trainiere {name}")
 
-# Visualisierung / Vergleich aller Modelle
-fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        for epoch in range(epochs):
+            epoch_loss = train(
+                train_dataloader,
+                model,
+                loss_fn,
+                optimizer,
+                progress_callback=lambda progress, pb=progress_bar: pb.progress(progress),
+            )
+            test_loss, accuracy = evaluate(test_dataloader, model, loss_fn)
+            train_losses.append(epoch_loss)
+            test_losses.append(test_loss)
+            test_accuracies.append(accuracy)
 
-# Plot 1: Test Loss Vergleich
-for model_name, result in results.items():
-    axes[0, 0].plot(range(1, epochs + 1), result['test_losses'], marker='o', label=model_name, linewidth=2)
-axes[0, 0].set_xlabel('Epoch', fontsize=12)
-axes[0, 0].set_ylabel('Test Loss', fontsize=12)
-axes[0, 0].set_title('Test Loss Vergleich', fontsize=14, fontweight='bold')
-axes[0, 0].legend(fontsize=10)
-axes[0, 0].grid(True, alpha=0.3)
+        torch.save(model.state_dict(), model_path(name))
+        trained_models[name] = model
+        results[name] = {
+            'train_losses': train_losses,
+            'test_losses': test_losses,
+            'test_accuracies': test_accuracies,
+        }
+        progress_bar.empty()
 
-# Plot 2: Test Accuracy Vergleich
-for model_name, result in results.items():
-    axes[0, 1].plot(range(1, epochs + 1), result['test_accuracies'], marker='o', label=model_name, linewidth=2)
-axes[0, 1].set_xlabel('Epoch', fontsize=12)
-axes[0, 1].set_ylabel('Accuracy (%)', fontsize=12)
-axes[0, 1].set_title('Test Accuracy Vergleich', fontsize=14, fontweight='bold')
-axes[0, 1].legend(fontsize=10)
-axes[0, 1].grid(True, alpha=0.3)
-axes[0, 1].set_ylim([0, 100])
+    create_model.clear()
+    load_models.clear()
+    return results, trained_models
 
-# Plot 3: Training Loss Vergleich
-for model_name, result in results.items():
-    axes[1, 0].plot(range(1, epochs + 1), result['train_losses'], marker='s', label=model_name, linewidth=2)
-axes[1, 0].set_xlabel('Epoch', fontsize=12)
-axes[1, 0].set_ylabel('Training Loss', fontsize=12)
-axes[1, 0].set_title('Training Loss Vergleich', fontsize=14, fontweight='bold')
-axes[1, 0].legend(fontsize=10)
-axes[1, 0].grid(True, alpha=0.3)
 
-# Plot 4: Final Accuracy Bar Chart
-final_accuracies = [results[model_name]['test_accuracies'][-1] for model_name in results.keys()]
-colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']
-axes[1, 1].bar(results.keys(), final_accuracies, color=colors, alpha=0.7, edgecolor='black', linewidth=2)
-axes[1, 1].set_ylabel('Final Accuracy (%)', fontsize=12)
-axes[1, 1].set_title('Finale Accuracy nach Training', fontsize=14, fontweight='bold')
-axes[1, 1].set_ylim([0, 100])
-for i, (name, acc) in enumerate(zip(results.keys(), final_accuracies)):
-    axes[1, 1].text(i, acc + 2, f'{acc:.1f}%', ha='center', fontsize=11, fontweight='bold')
-axes[1, 1].grid(True, alpha=0.3, axis='y')
+def ensure_models_trained(epochs: int):
+    if st.session_state.training_results is None:
+        with st.spinner('Trainiere Modelle vor dem Testen...'):
+            results, _ = train_all_models(epochs)
+            st.session_state.training_results = results
+            st.success('Training abgeschlossen. Die Modelle sind jetzt verfügbar.')
+        return results
+    return st.session_state.training_results
 
-plt.tight_layout()
-plt.savefig('model_comparison.png', dpi=150, bbox_inches='tight')
-print("Vergleichsgraph gespeichert als 'model_comparison.png'")
 
-classes = [
-    "0",
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8",
-    "9",
-]
+def plot_results(results):
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    epochs = len(next(iter(results.values()))['train_losses'])
 
-model.eval()
-x, y = test_data[0][0], test_data[0][1]
-with torch.no_grad():
-    x = x.to(device)
-    pred = model(x)
-    predicted, actual = classes[pred[0].argmax(0)], classes[y]
-    print(f'Predicted: "{predicted}", Actual: "{actual}"')
+    for name, result in results.items():
+        axes[0, 0].plot(range(1, epochs + 1), result['test_losses'], marker='o', label=name)
+    axes[0, 0].set_title('Test Loss Vergleich')
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('Test Loss')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True)
+
+    for name, result in results.items():
+        axes[0, 1].plot(range(1, epochs + 1), result['test_accuracies'], marker='o', label=name)
+    axes[0, 1].set_title('Test Accuracy Vergleich')
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('Accuracy (%)')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True)
+    axes[0, 1].set_ylim([0, 100])
+
+    for name, result in results.items():
+        axes[1, 0].plot(range(1, epochs + 1), result['train_losses'], marker='s', label=name)
+    axes[1, 0].set_title('Training Loss Vergleich')
+    axes[1, 0].set_xlabel('Epoch')
+    axes[1, 0].set_ylabel('Training Loss')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True)
+
+    final_accuracies = [results[name]['test_accuracies'][-1] for name in results]
+    axes[1, 1].bar(results.keys(), final_accuracies, color=['#FF6B6B', '#4ECDC4', '#45B7D1'])
+    axes[1, 1].set_title('Finale Test Accuracy')
+    axes[1, 1].set_ylabel('Accuracy (%)')
+    axes[1, 1].set_ylim([0, 100])
+    for i, acc in enumerate(final_accuracies):
+        axes[1, 1].text(i, acc + 1, f"{acc:.1f}%", ha='center')
+    axes[1, 1].grid(True, axis='y')
+
+    plt.tight_layout()
+    return fig
+
+
+def preprocess_canvas(image_data):
+    image = Image.fromarray(image_data.astype('uint8'), 'RGBA')
+    image = image.convert('L')
+    image = image.resize((28, 28))
+    array = np.array(image) / 255.0
+    array = 1 - array
+    tensor = torch.tensor(array, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+    return tensor, array
+
+
+def get_predictions(img_tensor):
+    models = load_models()
+    predictions = {}
+    softmax = torch.nn.Softmax(dim=1)
+    for name, model in models.items():
+        with torch.no_grad():
+            pred = model(img_tensor)
+            probs = softmax(pred)[0].cpu().numpy()
+            label = classes[int(probs.argmax())]
+            predictions[name] = {
+                'label': label,
+                'confidence': float(probs.max()),
+                'probabilities': probs.tolist(),
+            }
+    return predictions
+
+
+def app():
+    st.set_page_config(page_title='MNIST Browser GUI', layout='wide')
+    st.title('MNIST Zeichen-App im Browser')
+    st.write('Zeichne eine Ziffer, trainiere die Modelle oder lade vorhandene Gewichte. Alle drei Netzwerke sagen die Zahl vorher.')
+
+    training_data, test_data = load_datasets()
+    st.sidebar.header('Einstellungen')
+    epochs = st.sidebar.slider('Epochs', 1, 10, 5)
+    st.sidebar.write(f'Device: {device}')
+
+    if weights_available():
+        st.sidebar.success('Gewichte vorhanden: model_onelayermlp.pth, model_deepmlp.pth, model_simplecnn.pth')
+    else:
+        st.sidebar.warning('Es sind noch keine Gewichte vorhanden. Trainiere die Modelle vor dem Testen.')
+
+    if 'training_results' not in st.session_state:
+        st.session_state.training_results = None
+
+    if st.sidebar.button('Trainiere alle Modelle'):
+        with st.spinner('Modelle werden trainiert... Dies kann mehrere Minuten dauern.'):
+            results, models = train_all_models(epochs)
+            st.session_state.training_results = results
+            st.success('Training abgeschlossen!')
+            st.rerun()
+
+    if st.session_state.training_results is not None:
+        results = st.session_state.training_results
+    else:
+        results = None
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.subheader('Zeichne hier')
+        canvas_result = st_canvas(
+            fill_color='rgba(0, 0, 0, 0)',
+            stroke_width=20,
+            stroke_color='#000000',
+            background_color='#FFFFFF',
+            height=280,
+            width=280,
+            drawing_mode='freedraw',
+            key='canvas',
+        )
+
+        if st.button('Erkennen'):
+            if canvas_result.image_data is not None:
+                img_tensor, img_array = preprocess_canvas(canvas_result.image_data)
+                if st.session_state.training_results is None:
+                    ensure_models_trained(epochs)
+                    results = st.session_state.training_results
+                predictions = get_predictions(img_tensor)
+                st.image(img_array, caption='Verarbeitetes Bild', clamp=True, width=250)
+
+                for name, info in predictions.items():
+                    st.metric(f'{name}', f'{info["label"]}', delta=f'{info["confidence"]:.2f}')
+
+                st.subheader('Wahrscheinlichkeiten pro Modell')
+                st.dataframe({name: info['probabilities'] for name, info in predictions.items()})
+            else:
+                st.warning('Bitte zeichne zuerst eine Zahl!')
+
+    with col2:
+        st.subheader('Modelle und Evaluation')
+        if results is not None:
+            st.pyplot(plot_results(results))
+            st.write('Finale Genauigkeiten:')
+            final_acc = {name: result['test_accuracies'][-1] for name, result in results.items()}
+            st.table(final_acc)
+        elif weights_available():
+            st.info('Modelle sind geladen. Sie werden vor der ersten Erkennung trainiert.')
+        else:
+            st.info('Keine Gewichte vorhanden. Trainiere die Modelle im Sidebar.')
+
+    with st.expander('Modellarchitektur'):
+        for name, cls in model_classes.items():
+            st.markdown(f'**{name}**')
+            st.text(str(cls()))
+
+
+def is_running_in_streamlit() -> bool:
+    try:
+        return st.runtime.exists()
+    except Exception:
+        return False
+
+if __name__ == '__main__':
+    if not is_running_in_streamlit():
+        if STREAMLIT_AVAILABLE:
+            os.execvp(sys.executable, [sys.executable, '-m', 'streamlit', 'run', __file__])
+        else:
+            print('Bitte installiere streamlit und streamlit-drawable-canvas:')
+            print('uv run python -m pip install streamlit streamlit-drawable-canvas')
+            sys.exit(1)
+    else:
+        app()
