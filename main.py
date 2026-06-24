@@ -16,8 +16,7 @@ try:
     from streamlit_drawable_canvas import st_canvas
     STREAMLIT_AVAILABLE = True
 except ImportError:
-    print("Bitte installiere streamlit und streamlit-drawable-canvas:")
-    print("uv run python -m pip install streamlit streamlit-drawable-canvas")
+    print("Streamlit ist nicht runtergeladen.")
     sys.exit(1)
 
 from PIL import Image
@@ -197,10 +196,10 @@ def train_all_models(epochs: int):
 
 def ensure_models_trained(epochs: int):
     if st.session_state.training_results is None:
-        with st.spinner('Trainiere Modelle vor dem Testen...'):
+        with st.spinner('Modelle werden trainiert...'):
             results, _ = train_all_models(epochs)
             st.session_state.training_results = results
-            st.success('Training abgeschlossen. Die Modelle sind jetzt verfügbar.')
+            st.success('Training abgeschlossen.')
         return results
     return st.session_state.training_results
 
@@ -212,7 +211,7 @@ def plot_results(results):
     for name, result in results.items():
         axes[0, 0].plot(range(1, epochs + 1), result['test_losses'], marker='o', label=name)
     axes[0, 0].set_title('Test Loss Vergleich')
-    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_xlabel('Epochen')
     axes[0, 0].set_ylabel('Test Loss')
     axes[0, 0].legend()
     axes[0, 0].grid(True)
@@ -276,24 +275,24 @@ def get_predictions(img_tensor):
 
 def app():
     st.set_page_config(page_title='MNIST Browser GUI', layout='wide')
-    st.title('MNIST Zeichen-App im Browser')
-    st.write('Zeichne eine Ziffer, trainiere die Modelle oder lade vorhandene Gewichte. Alle drei Netzwerke sagen die Zahl vorher.')
+    st.title('MNIST Zeichen-App')
+    st.write('Trainiere ein Modell, zeichne eine Zahl und lasse sie erraten.')
 
     training_data, test_data = load_datasets()
     st.sidebar.header('Einstellungen')
-    epochs = st.sidebar.slider('Epochs', 1, 10, 5)
+    epochs = st.sidebar.slider('Epochen', 1, 10, 5)
     st.sidebar.write(f'Device: {device}')
 
     if weights_available():
         st.sidebar.success('Gewichte vorhanden: model_onelayermlp.pth, model_deepmlp.pth, model_simplecnn.pth')
     else:
-        st.sidebar.warning('Es sind noch keine Gewichte vorhanden. Trainiere die Modelle vor dem Testen.')
+        st.sidebar.warning('Keine Gewichte vorhanden, trainiere vor dem Testen.')
 
     if 'training_results' not in st.session_state:
         st.session_state.training_results = None
 
     if st.sidebar.button('Trainiere alle Modelle'):
-        with st.spinner('Modelle werden trainiert... Dies kann mehrere Minuten dauern.'):
+        with st.spinner('Modelle werden trainiert...'):
             results, models = train_all_models(epochs)
             st.session_state.training_results = results
             st.success('Training abgeschlossen!')
@@ -345,7 +344,7 @@ def app():
         elif weights_available():
             st.info('Modelle sind geladen. Sie werden vor der ersten Erkennung trainiert.')
         else:
-            st.info('Keine Gewichte vorhanden. Trainiere die Modelle im Sidebar.')
+            st.info('Keine Gewichte vorhanden, trainiere die Modelle in der Sidebar.')
 
     with st.expander('Modellarchitektur'):
         for name, cls in model_classes.items():
